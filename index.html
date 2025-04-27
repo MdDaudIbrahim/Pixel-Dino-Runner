@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Pixel Dino Runner</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.js"></script>
+    <style>
+        /* Basic reset and full screen setup */
+        html, body {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden; /* Prevent scroll bars */
+            background-color: #202030; /* Background for tiny gaps */
+            font-family: 'Courier New', Courier, monospace; /* Pixel-friendly font */
+        }
+        /* Ensure canvas fills the body */
+        canvas {
+            display: block; /* Removes extra space below canvas */
+        }
+    </style>
+</head>
+<body>
+    <script>
+        // --- Global Variables ---
+        let dino;
+        let obstacles = [];
+        let clouds = [];
+        let particles = [];
+        let score = 0;
+        let highScore = 0;
+        let gameSpeed = 5;
+        // *** CHANGE: Slightly faster speed increase ***
+        let speedIncreaseFactor = 0.003;
+        let obstacleInterval = 85; // Base interval reference (slightly increased)
+        let framesUntilNextObstacle = 60; // Initial delay before first obstacle
+        let cloudInterval = 150;
+        let frameCounter = 0; // Still useful for general timing/animations
+        let gameState = 'playing';
+
+        // Background layers
+        let bgLayer1X = 0;
+        let bgLayer2X = 0;
+        const bgLayer1Speed = 0.4;
+        const bgLayer2Speed = 0.8;
+
+        // Screen Shake
+        let shakeAmount = 0;
+        const shakeDecay = 0.95;
+        const maxShake = 5;
+
+        let groundHeight;
+
+        // --- p5.js Setup Function ---
+        function setup() {
+            createCanvas(windowWidth, windowHeight);
+            groundHeight = windowHeight * 0.15;
+            noSmooth();
+            textAlign(LEFT, TOP);
+            textFont('Courier New');
+            dino = new Dino(windowHeight * 0.1);
+            loadHighScore(); // Load high score
+            resetGame(); // Call reset to initialize clouds and obstacle timer properly
+        }
+
+        // --- Load High Score ---
+        function loadHighScore() {
+             let storedHighScore = localStorage.getItem('dinoHighScorePolished');
+            if (storedHighScore) {
+                highScore = parseInt(storedHighScore);
+            } else {
+                highScore = 0;
+            }
+        }
+
+        // --- p5.js Draw Function ---
+        function draw() {
+            push(); // Screen shake isolation
+
+            if (shakeAmount > 0.1) {
+                translate(random(-shakeAmount, shakeAmount), random(-shakeAmount, shakeAmount));
+                shakeAmount *= shakeDecay;
+            } else {
+                shakeAmount = 0;
+            }
+
+            // --- Background ---
+            background(110, 180, 255);
+
+            // Draw Clouds
+            for (let i = clouds.length - 1; i >= 0; i--) {
+                clouds[i].update();
+                clouds[i].show();
+                if (clouds[i].offscreen()) {
+                    clouds.splice(i, 1);
+                }
+            }
+            // Spawn clouds periodically only when playing
+            if (gameState === 'playing' && frameCounter > 0 && frameCounter % cloudInterval === 0) {
+                 clouds.push(new Cloud());
+            }
+
+
+            // Draw Parallax Background Layers
+            drawBackgroundLayer(bgLayer1X, height - groundHeight - height * 0.15, height * 0.05, color(100, 140, 100, 200), bgLayer1Speed);
+            drawBackgroundLayer(bgLayer2X, height - groundHeight - height * 0.1, height * 0.08, color(130, 100, 80, 220), bgLayer2Speed);
+             if (gameState === 'playing') {
+                bgLayer1X -= bgLayer1Speed * gameSpeed * 0.1;
+                bgLayer2X -= bgLayer2Speed * gameSpeed * 0.1;
+                if (bgLayer1X < -width * 1.5) bgLayer1X = 0;
+                if (bgLayer2X < -width * 1.5) bgLayer2X = 0;
+            }
+
+            // Draw Ground
+            drawGround();
+
+            // Draw Particles
+            for (let i = particles.length - 1; i >= 0; i--) {
+                particles[i].update();
+                particles[i].show();
+                if (particles[i].isFinished()) {
+                    particles.splice(i, 1);
+                }
+            }
+
+            // --- Game State Logic ---
+            if (gameState === 'playing') {
+                // Update and Display Dino
+                dino.update();
+                dino.show();
+
+                // --- Handle Obstacles ---
+                framesUntilNextObstacle--; // Countdown timer
+
+                if (framesUntilNextObstacle <= 0) {
+                    obstacles.push(new Obstacle()); // Spawn a new obstacle
+
+                    // Calculate next interval with randomness
+                    // *** CHANGE: New obstacle timing logic ***
+                    let baseInterval = Math.max(30, floor(obstacleInterval - gameSpeed * 1.8)); // Minimum 30 frames, scales faster with speed
+                    // Add +/- 20% randomness to the interval
+                    framesUntilNextObstacle = baseInterval + random(-baseInterval * 0.2, baseInterval * 0.2);
+                }
+
+                // Update and display obstacles
+                for (let i = obstacles.length - 1; i >= 0; i--) {
+                    obstacles[i].update();
+                    obstacles[i].show();
+
+                    if (dino.hits(obstacles[i])) {
+                        gameOver();
+                        break; // Important: exit loop after game over
+                    }
+
+                    // Use a separate check for scoring to avoid double counting if collision happens
+                    if (!obstacles[i].scored && obstacles[i].isPassedBy(dino)) {
+                         score++;
+                         obstacles[i].scored = true; // Mark as scored
+                    }
+
+
+                    if (obstacles[i].offscreen()) {
+                        obstacles.splice(i, 1);
+                        // Score is now incremented when passed, not when offscreen
+                    }
+                }
+
+                // Update Score and Speed
+                 // Score increases when passing obstacles now
+                gameSpeed += speedIncreaseFactor;
+                frameCounter++;
+
+                // Display HUD
+                displayHUD();
+
+            } else if (gameState === 'gameOver') {
+                // Show frozen elements
+                dino.show();
+                for (let o of obstacles) o.show();
+                 // Display Game Over screen on top
+                displayGameOver();
+            }
+
+            pop(); // End screen shake isolation
+        }
+
+        // --- Draw HUD ---
+        function displayHUD() {
+            let baseSize = min(width, height);
+            let txtSize = max(12, baseSize * 0.03);
+            textSize(txtSize);
+            fill(0, 0, 0, 100);
+            noStroke();
+            text(`Score: ${floor(score)}`, 11, 11);
+            text(`High Score: ${highScore}`, 11, 11 + txtSize * 1.2 + 1);
+            fill(255);
+            text(`Score: ${floor(score)}`, 10, 10);
+            text(`High Score: ${highScore}`, 10, 10 + txtSize * 1.2);
+            textAlign(CENTER, TOP);
+            fill(0, 0, 0, 100);
+            text("SPACE / Click / Tap to JUMP", width / 2 + 1, 11);
+            fill(255);
+            text("SPACE / Click / Tap to JUMP", width / 2, 10);
+            textAlign(LEFT, TOP);
+        }
+
+        // --- Draw Game Over Screen ---
+         function displayGameOver() {
+            fill(0, 0, 0, 180);
+            rect(0, 0, width, height);
+            fill(255);
+            noStroke();
+            textAlign(CENTER, CENTER);
+            let baseSize = min(width, height);
+            textSize(max(24, baseSize * 0.1));
+            fill(200, 0, 0);
+            text("GAME OVER", width / 2, height / 2 - height * 0.1);
+            fill(255);
+            textSize(max(16, baseSize * 0.05));
+            text(`Final Score: ${floor(score)}`, width / 2, height / 2);
+            text(`High Score: ${highScore}`, width / 2, height / 2 + height * 0.08);
+            let pulse = sin(frameCount * 0.1) * 10 + 245;
+            fill(255, 255, 255, pulse);
+            text("Tap / Click / SPACE to Restart", width / 2, height / 2 + height * 0.18);
+            textAlign(LEFT, TOP);
+        }
+
+        // --- Draw Ground ---
+        function drawGround() {
+            fill(110, 80, 70);
+            noStroke();
+            rect(0, height - groundHeight, width, groundHeight);
+            stroke(80, 50, 40, 150);
+            strokeWeight(1);
+            for (let i = 0; i < 15; i++) {
+                let yPos = height - groundHeight + random(groundHeight * 0.1, groundHeight * 0.9);
+                let lineLength = random(width * 0.02, width * 0.05);
+                let scrollSpeed = (gameState === 'playing') ? gameSpeed * 0.8 : 0;
+                let startX = (frameCount * 0.5 * (scrollSpeed / 5) + i * width * 0.15) % (width * 1.2) - width * 0.1;
+                line(startX, yPos, startX + lineLength, yPos);
+            }
+            noStroke();
+        }
+
+        // --- Draw Background Layer ---
+        function drawBackgroundLayer(xOffset, yPos, h, col, speed) {
+            fill(col);
+            noStroke();
+            let shapeWidth = width * 0.2;
+            for (let x = xOffset; x < width * 1.5; x += shapeWidth * 0.8) {
+                 triangle(x, yPos + h, x + shapeWidth / 2, yPos, x + shapeWidth, yPos + h);
+                 fill(red(col)*0.8, green(col)*0.8, blue(col)*0.8, alpha(col));
+                 triangle(x + shapeWidth * 0.4, yPos + h * 0.8, x + shapeWidth / 2, yPos, x + shapeWidth, yPos + h);
+                 fill(col);
+            }
+        }
+
+        // --- Input Handling ---
+        function keyPressed() { if (key === ' ') handleInput(); return false; }
+        function mousePressed() { handleInput(); return false; }
+        function touchStarted() { handleInput(); return false; }
+
+        function handleInput() {
+             if (gameState === 'playing') {
+                dino.jump();
+            } else if (gameState === 'gameOver') {
+                resetGame();
+            }
+        }
+
+        // --- Game Over Function ---
+        function gameOver() {
+            if (gameState === 'gameOver') return;
+            gameState = 'gameOver';
+            shakeAmount = maxShake;
+            if (score > highScore) {
+                highScore = floor(score);
+                localStorage.setItem('dinoHighScorePolished', highScore.toString());
+            }
+        }
+
+        // --- Reset Game Function ---
+        function resetGame() {
+            score = 0;
+            gameSpeed = 5;
+            obstacles = [];
+            clouds = [];
+            particles = [];
+            shakeAmount = 0;
+            groundHeight = windowHeight * 0.15; // Recalculate just in case
+            dino = new Dino(windowHeight * 0.1);
+            frameCounter = 0;
+            bgLayer1X = 0;
+            bgLayer2X = 0;
+            // *** CHANGE: Reset obstacle timer ***
+            framesUntilNextObstacle = 60; // Initial delay for first obstacle
+            gameState = 'playing';
+            // Initial clouds
+            clouds = []; // Clear existing clouds before adding new ones
+            for(let i = 0; i < 5; i++) {
+                 clouds.push(new Cloud(random(width), random(height * 0.1, height * 0.5)));
+            }
+             // Ensure high score is loaded correctly on first start or refresh
+             loadHighScore();
+        }
+
+        // --- Dino Class ---
+        class Dino {
+            constructor(baseSize) {
+                this.baseSize = baseSize;
+                this.w = this.baseSize;
+                this.h = this.baseSize;
+                this.x = width * 0.15;
+                this.startY = height - groundHeight - this.h;
+                this.y = this.startY;
+                this.velocityY = 0;
+                this.gravity = 0.035 * this.baseSize;
+                this.jumpForce = -0.65 * this.baseSize;
+                this.isJumping = false;
+                this.legToggle = false;
+                this.landed = false;
+            }
+
+            update() {
+                this.landed = false;
+                this.velocityY += this.gravity;
+                this.y += this.velocityY;
+                if (this.y >= this.startY) {
+                    this.y = this.startY;
+                    this.velocityY = 0;
+                    if (this.isJumping) {
+                         this.isJumping = false;
+                         this.landed = true;
+                         for (let i = 0; i < 5; i++) {
+                            particles.push(new Particle(this.x + this.w * 0.5, this.y + this.h));
+                         }
+                    }
+                }
+                 if (!this.isJumping && frameCount % 8 < 4) { this.legToggle = true; } else { this.legToggle = false; }
+            }
+
+            show() {
+                push();
+                translate(this.x, this.y);
+                noStroke();
+                let pose = 'running';
+                if (this.isJumping) { pose = (this.velocityY < -this.gravity * 2) ? 'jumping_up' : 'jumping_down'; }
+                let bodyColor = color(80, 180, 80); let legColor = color(60, 150, 60); let eyeColor = color(255); let pupilColor = color(0); let tailColor = legColor;
+                fill(bodyColor); rect(this.w * 0.2, 0, this.w * 0.8, this.h * 0.8); rect(0, this.h * 0.3, this.w * 0.3, this.h * 0.3); fill(tailColor); triangle(this.w * 0.9, this.h * 0.1, this.w * 1.2, this.h * 0.3, this.w * 0.9, this.h * 0.5); fill(eyeColor); ellipse(this.w * 0.15, this.h * 0.4, this.w * 0.15, this.w * 0.15); fill(pupilColor); ellipse(this.w * 0.18, this.h * 0.42, this.w * 0.07, this.w * 0.07); fill(legColor);
+                if (pose === 'running') { if (this.legToggle) { rect(this.w * 0.3, this.h * 0.8, this.w * 0.2, this.h * 0.2); rect(this.w * 0.7, this.h * 0.7, this.w * 0.2, this.h * 0.3); } else { rect(this.w * 0.3, this.h * 0.7, this.w * 0.2, this.h * 0.3); rect(this.w * 0.7, this.h * 0.8, this.w * 0.2, this.h * 0.2); } } else { rect(this.w * 0.3, this.h * 0.7, this.w * 0.2, this.h * 0.2); rect(this.w * 0.6, this.h * 0.7, this.w * 0.2, this.h * 0.2); }
+                pop();
+            }
+
+            jump() { if (!this.isJumping) { this.velocityY = this.jumpForce; this.isJumping = true; this.landed = false; } }
+
+            hits(obstacle) {
+                let dinoLeft = this.x + this.w * 0.1; let dinoRight = this.x + this.w * 0.9; let dinoTop = this.y; let dinoBottom = this.y + this.h;
+                let obsLeft = obstacle.x; let obsRight = obstacle.x + obstacle.w; let obsTop = obstacle.y; let obsBottom = obstacle.y + obstacle.h;
+                return (dinoRight > obsLeft && dinoLeft < obsRight && dinoBottom > obsTop && dinoTop < obsBottom);
+            }
+        }
+
+        // --- Obstacle Class (Cactus) ---
+        class Obstacle {
+            constructor() {
+                this.w = random(width * 0.02, width * 0.04);
+                this.minHeightFactor = 0.05; this.maxHeightFactor = 0.15;
+                this.h = random(height * this.minHeightFactor, height * this.maxHeightFactor);
+                this.x = width;
+                this.y = height - groundHeight - this.h;
+                this.hasArms = random() > 0.4;
+                this.armStyle = floor(random(3));
+                this.scored = false; // *** ADDED: Track if score was given for passing this ***
+            }
+
+            update() { if (gameState === 'playing') { this.x -= gameSpeed; } }
+
+            show() {
+                push(); translate(this.x, this.y); let mainColor = color(200, 0, 0); let armColor = color(180, 0, 0); fill(mainColor); noStroke(); rect(0, 0, this.w, this.h, 2);
+                if (this.hasArms) { fill(armColor); let armWidth = this.w * 0.7; let armHeight = this.h * 0.4; let armYPos = this.h * 0.2; if (this.armStyle === 0) { rect(-armWidth * 0.6, armYPos, armWidth, armHeight * 0.5, 1); rect(-armWidth * 0.6, armYPos - armHeight * 0.6, armWidth * 0.4, armHeight, 1); rect(this.w * 0.8, armYPos + armHeight*0.4, armWidth, armHeight * 0.5, 1); rect(this.w * 0.8 + armWidth * 0.6, armYPos + armHeight*0.4 - armHeight*0.6, armWidth * 0.4, armHeight, 1); } else if (this.armStyle === 1) { rect(-armWidth * 0.6, armYPos - armHeight * 0.6, armWidth * 0.4, armHeight, 1); rect(this.w + armWidth*0.2, armYPos - armHeight * 0.6, armWidth * 0.4, armHeight, 1); } }
+                pop();
+            }
+
+             // *** ADDED: Check if dino has passed this obstacle ***
+             isPassedBy(dino) {
+                 return !this.scored && dino.x > this.x + this.w;
+             }
+
+
+            offscreen() { return this.x < -this.w * 2; }
+        }
+
+        // --- Cloud Class ---
+        class Cloud {
+             constructor(startX, startY) { this.x = startX !== undefined ? startX : width + random(width * 0.05, width * 0.15); this.y = startY !== undefined ? startY : random(height * 0.1, height * 0.5); this.speed = random(0.2, 0.7); this.size = random(width * 0.05, width * 0.15); this.parts = []; let numParts = floor(random(3, 7)); for (let i = 0; i < numParts; i++) { this.parts.push({ offsetX: random(-this.size * 0.5, this.size * 0.5), offsetY: random(-this.size * 0.2, this.size * 0.2), diameter: random(this.size * 0.3, this.size * 0.7) }); } }
+             update() { if (gameState === 'playing') { this.x -= this.speed * (gameSpeed * 0.05 + 0.1); } }
+             show() { fill(255, 255, 255, 200); noStroke(); for (let part of this.parts) { ellipse(this.x + part.offsetX, this.y + part.offsetY, part.diameter, part.diameter * 0.7); } }
+             offscreen() { return this.x < -this.size * 1.5; }
+        }
+
+         // --- Particle Class (for Dust) ---
+        class Particle {
+            constructor(x, y) { this.x = x + random(-5, 5); this.y = y; this.vx = random(-1, 1) * (gameSpeed * 0.1 + 0.5); this.vy = random(-1.5, -0.5); this.alpha = 200; this.size = random(min(width, height) * 0.005, min(width, height) * 0.01); this.gravity = 0.05; this.lifespan = 60; this.color = color(160, 110, 90, this.alpha); }
+            update() { this.vy += this.gravity; this.x += this.vx; this.y += this.vy; this.alpha -= 3; this.lifespan--; this.color = color(160, 110, 90, max(0, this.alpha)); }
+            show() { noStroke(); fill(this.color); rect(this.x - this.size / 2, this.y - this.size / 2, this.size, this.size); }
+            isFinished() { return this.lifespan <= 0 || this.alpha <= 0; }
+        }
+
+        // --- p5.js windowResized Function ---
+        function windowResized() {
+            resizeCanvas(windowWidth, windowHeight);
+            groundHeight = windowHeight * 0.15;
+            resetGame(); // Reset to apply new scaling
+        }
+
+    </script>
+</body>
+</html>
+<!-- This code is a polished version of the classic Dino Runner game, with improved graphics, animations, and game mechanics. It includes a parallax background, dynamic obstacles, and a scoring system. The game is designed to be played in a web browser using the p5.js library. -->
+<!-- The game features a pixelated dinosaur character that jumps over obstacles, with a simple yet engaging gameplay loop. The code is structured to allow for easy modifications and enhancements, making it a great starting point for further development. -->       
